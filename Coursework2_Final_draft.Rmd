@@ -1,0 +1,558 @@
+---
+title: "Coursework 2"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Coursework 2: Predict molecular function from protein sequence.
+
+## 0. Setup notebook and load required packages.
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+#list all packages used
+packages = c("tidyr", "readr", "phylotools", "dplyr", "ggplot2", "Biostrings", "protr", "stringr", "randomForest", "tree", "ggrepel", "tidyverse", "e1071", "neuralnet", "shiny", "bslib", "dplyr", "ggplot2", "ggExtra", "seqinr", "caret")
+
+## oad or install&load all
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+```
+
+## 1. Read the data
+
+### TSV
+
+The data is split into TSV files including details about the sequences as well as fasta files. Data has been dowloaded based on the GO identifier from uniprot. Each tsv and data file is organised by GO identifier corresponfing to its molecular function.
+
+All the TSV files are loaded first.
+
+```{r read dataframes}
+#load data (dataframes)
+catalyst.df <- read_tsv("Data/GO0003824.tsv")
+binding.df <- read_tsv("Data/GO0005488.tsv")
+electron.df <- read_tsv("Data/GO0009055.tsv")
+regulator.df <- read_tsv("Data/GO0098772.tsv")
+transporter.df <- read_tsv("Data/GO0005215.tsv")
+structural.df <- read_tsv("Data/GO0005198.tsv")
+```
+
+### FASTA
+
+Fasta files are loaded using phylotools as several libraries with function read.fasta are required and have been loaded. Loading these using phylotools allows for extracting of the sequnce and sequence name.
+
+```{r load fasta with phylotools}
+# Load FASTA files using phylotools package
+catalyst.fasta <- phylotools::read.fasta("Data/GO0003824.fasta")
+binding.fasta <-  phylotools::read.fasta("Data/GO0005488.fasta")
+electron.fasta <-  phylotools::read.fasta("Data/GO0009055.fasta")
+regulator.fasta <-  phylotools::read.fasta("Data/GO0098772.fasta")
+transporter.fasta <- phylotools::read.fasta("Data/GO0005215.fasta")
+structural.fasta <- phylotools::read.fasta("Data/GO0005198.fasta")
+```
+
+## 2. Clean the data
+
+### TSV
+
+TSV files are inspected and a new column added to identitify each dataset by its Molecular function associated with the GO ID.
+
+```{r add Molecular activity columns}
+#inspect loaded data data 
+summary(c(binding.df,catalyst.df, electron.df,regulator.df,transporter.df,structural.df))
+
+#Add a column for GOID and GO descriptor to each df
+binding.df$GO <- "Binding"
+catalyst.df$GO <- "Catalytic activity"
+electron.df$GO <- "Electron Transfer"
+regulator.df$GO <- "Molecular Function Regulator"
+transporter.df$GO <- "Transporter Activity"
+structural.df$GO <- "Structural Molecule"
+```
+
+As protein sequences can be categorised to have more than one molecular activity this code focuses on data which does not overlap between the 6 molecular function categories. Any data which is duplicated between dataframes is removed in this chunk.
+
+```{r filter duplicate Entry}
+#filter out duplicates in the databases
+catalyst.filtered <- catalyst.df %>% 
+  filter(!Entry %in% binding.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% transporter.df$Entry & !Entry %in% structural.df$Entry)
+
+binding.filtered <-binding.df %>% 
+  filter(!Entry %in% catalyst.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% transporter.df$Entry & !Entry %in% structural.df$Entry)
+
+electron.filtered <- electron.df %>% 
+  filter(!Entry %in% binding.df$Entry & !Entry %in% catalyst.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% transporter.df$Entry & !Entry %in% structural.df$Entry)
+
+regulator.filtered <- regulator.df %>% 
+  filter(!Entry %in% binding.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% catalyst.df$Entry & !Entry %in% transporter.df$Entry & !Entry %in% structural.df$Entry)
+
+structural.filtered <- structural.df %>% 
+  filter(!Entry %in% binding.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% transporter.df$Entry & !Entry %in% catalyst.df$Entry)
+
+transporter.filtered <- transporter.df %>% 
+  filter(!Entry %in% binding.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% catalyst.df$Entry & !Entry %in% structural.df$Entry)
+```
+
+These databases are combined chaecked for missing values and saved in this chunk.
+
+```{r join and save database}
+#combine all databases
+df <- rbind(catalyst.filtered,binding.filtered,electron.filtered,regulator.filtered,structural.filtered,transporter.filtered)
+
+#modify colnames for ease 
+colnames(df) <- c("Entry", "Organism.ID", "Organism", "Length", "Molecular_function", "GO" )
+
+#check for missing values
+sapply(df, function(x) sum(is.na(x)))
+
+# inspect modified data
+summary(df)
+
+#intermediate file saved
+write_tsv(df, "Output/output_file1.tsv")
+
+```
+
+```{r load intermediate df file 1}
+#load saved file 
+df <- read_tsv("Output/output_file1.tsv")
+```
+
+### FASTA
+
+Initial inspection of the data
+
+```{r check files loaded correctly}
+names.fasta <- c(catalyst.fasta, binding.fasta, electron.fasta, regulator.fasta,transporter.fasta,structural.fasta)
+summary(names.fasta)
+```
+
+The initial processing of the fasta files involves isolating the Entry name from the sequence name so that the fasta files can be filtered in the same manner as the tsv databases to exlude any duplicate values.
+
+Entry is isolated in this chunk.
+
+```{r isolate Entry from seq.name}
+# Isolate Entry ID from rownames
+catalyst <- strsplit(as.character(catalyst.fasta$seq.name), "|", fixed = T)
+binding <- strsplit(as.character(binding.fasta$seq.name), "|", fixed = T)
+electron <- strsplit(as.character(electron.fasta$seq.name), "|", fixed = T)
+regulator <- strsplit(as.character(regulator.fasta$seq.name), "|", fixed = T)
+structural <- strsplit(as.character(structural.fasta$seq.name), "|", fixed = T)
+transporter <- strsplit(as.character(transporter.fasta$seq.name), "|", fixed = T)
+```
+
+```{r check Entry isolated correctly}
+names <- c(catalyst,binding,electron, regulator, structural,transporter)
+head(names)
+```
+
+A dataframe for each Molecular function is established with Entry and sequence as variables.
+
+```{r add entry as a column}
+# Create a data frame with Entry ID as a column
+
+binding.data <- data.frame(
+  Entry = sapply(binding, function(binding) binding[2]),
+  seq.text = binding.fasta$seq.text
+)
+catalyst.data <- data.frame(
+  Entry = sapply(catalyst, function(catalyst) catalyst[2]),
+  seq.text = catalyst.fasta$seq.text
+)
+electron.data <- data.frame(
+  Entry = sapply(electron, function(electron) electron[2]),
+  seq.text = electron.fasta$seq.text
+)
+regulator.data <- data.frame(
+  Entry = sapply(regulator, function(regulator) regulator[2]),
+  seq.text = regulator.fasta$seq.text
+)
+structural.data <- data.frame(
+  Entry = sapply(structural, function(structural) structural[2]),
+  seq.text = structural.fasta$seq.text
+)
+transporter.data <- data.frame(
+  Entry = sapply(transporter, function(transporter) transporter[2]),
+  seq.text = transporter.fasta$seq.text
+)
+```
+
+```{r check dataframe is manipulated correctly}
+names.data <- c(binding.data, catalyst.data, electron.data, regulator.data, structural.data, transporter.data)
+summary(names.data)
+```
+
+All fasta dataframes are combined here into one.
+
+```{r merge all fasta dataframes}
+#merge all fasta dataframes
+
+merged <- rbind(binding.data, catalyst.data)
+merged <- rbind(merged, electron.data)
+merged <- rbind(merged, regulator.data)
+merged <- rbind(merged, transporter.data)
+merged <- rbind(merged, structural.data)
+```
+
+This can now be merged with the filtered tsv dataframe to exclude any duplicates.
+
+```{r join databases keeping only entries filtered in df }
+# Perform left join using dplyr
+filtered.df <- left_join(df, merged, by = 'Entry')
+#check files merged correctly
+summary(filtered.df)
+```
+
+This filtered dataframe can now be saved as a fata file utilising Entry as sequence name and the protein sequence stored in filtered dataframe.
+
+```{r save filtered fasta }
+# Save filtered fasta
+write.fasta(as.list(filtered.df$seq.text), filtered.df$Entry, "Output/filtered.fasta", as.string = FALSE)
+```
+
+This file is now loaded using protr so that amino acid composition can be calculated.
+
+```{r load filtered fasta file using protr}
+# Load final fasta
+filtered.fasta <- readFASTA("Output/filtered.fasta")
+filtered.fasta[1:5]
+```
+
+```{r remove non standard amino acids }
+#remove any sequences with non standard amino acids
+filtered.fasta <- filtered.fasta[(sapply(filtered.fasta, protcheck))]
+```
+
+```{r calculate amino acid composition}
+# Calculate APseAAC descriptors
+composition <- t(sapply(filtered.fasta, function(seq) extractAPAAC(seq, lambda = 1)))
+```
+
+This processed and filtered fasta file can now be saved as a dataframe.
+
+```{r save amino acid composition as a tsv file }
+#change composition to a dataframe
+composition <- data.frame(composition)
+#include Entry as a column
+composition <- tibble::rownames_to_column(composition, "Entry")
+head(composition)
+
+# Save AA composition
+write_tsv(composition, "Output/Composition.tsv")
+#load dataframe
+```
+
+```{r read amino acid composition file }
+composition <- read_tsv("Output/Composition.tsv")
+#check file imported correctly
+colnames(composition)
+```
+
+Now the composition file can be merged with the original dataframe and final checks and processing are carried out.
+
+```{r merge fasta and df files}
+# Merge base dataframe with FASTA data by Entry
+df <- left_join(df, composition, by = 'Entry')
+colnames(df)
+
+# Remove columns not used in classification
+df <- subset(df, select = -c(Entry, Organism.ID, Organism, Molecular_function))
+summary(df)
+
+# Save final merged data file
+write_tsv(df, "Output/final_df.tsv")
+```
+
+```{r load final df}
+df <- read_tsv("Output/final_df.tsv") 
+
+#change oGO to factor for clasification
+df$GO <- as.factor(df$GO)
+
+#check for NAs n the final dataset
+sapply(df, function(x) sum(is.na(x)))
+
+#remove NAs
+df<- drop_na(df)
+
+#check Nas have been handles
+sapply(df, function(x) sum(is.na(x)))
+
+```
+
+## 4. Exloratory data analysis
+
+Simple tree ploted first to visualise main components contributing to clasification.
+
+```{r plot simple tree}
+#Plot a tree to see the variables which largerly contribute to clasification 
+tree <- tree(GO ~ ., df)
+
+#save image
+png("Output/SimpleTree.png")
+
+dev.new(width=1000, height=1000, unit="px") 
+plot(tree, type="uniform")
+text(tree)
+# Close device
+dev.off()
+```
+
+Three models using different paramaters were initially explored.
+
+As the dataset is large the exploratory models used a subset of the original data to identify ideal parameters.
+
+```{r create a sample dataset for choosing model and paramaters}
+#select random sample of 1000 rows from data frame
+set.seed(123)
+df.sample <- df[sample(nrow(df), size=10000), ]
+
+```
+
+### Random Forest
+
+```{r}
+# Define the training control and train the Random Forest model
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+
+rfModel <- train(GO ~ ., data = df.sample, method = "rf", trControl = fitControl)
+print(rfModel)
+
+# Define the tuning grid and train with hyperparameter tuning
+rfModelTuned <- train(GO ~ ., data = df.sample, method = "rf", trControl = fitControl)
+print(rfModelTuned)
+
+# Plot feature importance
+importance <- varImp(rfModelTuned, scale = FALSE)
+
+# Extract variable importance
+importance_df <- as.data.frame(importance$importance)
+importance_df$Variable <- rownames(importance_df)
+# Plot variable importance
+ggplot(importance_df, aes(x = reorder(Variable, Overall), y = Overall)) +
+  geom_bar(stat = "identity", fill = "mediumpurple") +
+  coord_flip() +
+  xlab("Variables") +
+  ylab("Importance") +
+  ggtitle("Variable Importance Plot") +
+  theme_minimal()
+
+```
+
+Notably transporter electron transfer and regulator are not well predicted using the random forrest model.
+
+### SVM
+
+```{r try a SVM clasifier}
+
+# Train the SVM model
+
+svmModel <- train(GO ~ ., data = df.sample, method = "svmRadial", trControl = fitControl)
+print(svmModel)
+
+# Define the tuning grid and train with hyperparameter tuning
+svmModelTuned <- train(GO ~ ., data = df.sample, method = "svmRadial", trControl = fitControl)
+print(svmModelTuned)
+
+# Predict Molecular function with this model 
+predictions <- predict(svmModelTuned, newdata = df.sample)
+
+# Generate the confusion matrix
+confusionMatrix(predictions, df.sample$GO)
+```
+
+## Neural Nets
+
+```{r try neuralnets}
+
+# Train the Neural Nets model
+
+nnModel <- train(GO ~ ., data = df.sample, method = "avNNet", trControl = fitControl)
+print(nnModel)
+
+# Define the tuning grid and train with hyperparameter tuning
+nnModelTuned <- train(GO ~ ., data = df.sample, method = "avNNet", trControl = fitControl)
+print(nnModelTuned)
+
+# Predict Molecular function with this model 
+predictions <- predict(nnModelTuned, newdata = df.sample)
+
+# Generate the confusion matrix
+confusionMatrix(predictions, df.sample$GO)
+```
+
+Shiny graph used to visually identify any patterns between variables.
+
+```{r}
+
+# Find subset of columns that are suitable for scatter plot
+df_num <- df |> select(where(is.numeric))
+
+ui <- page_sidebar(
+  theme = bs_theme(bootswatch = "minty"),
+  sidebar = sidebar(
+    varSelectInput("xvar", "X variable", df_num, selected = "Length"),
+    varSelectInput("yvar", "Y variable", df_num, selected = "Length"),
+    checkboxGroupInput(
+      "GO", "Filter by GO",
+      choices = unique(df$GO), 
+      selected = unique(df$GO)
+    ),
+    hr(), # Add a horizontal rule
+    checkboxInput("by_GO", "Show GO", TRUE),
+    checkboxInput("show_margins", "Show marginal plots", TRUE),
+    checkboxInput("smooth", "Add smoother"),
+  ),
+  plotOutput("scatter")
+)
+
+server <- function(input, output, session) {
+  subsetted <- reactive({
+    req(input$GO)
+    df |> filter(GO %in% input$GO)
+  })
+  
+  output$scatter <- renderPlot({
+    p <- ggplot(subsetted(), aes(!!input$xvar, !!input$yvar)) + list(
+      theme(legend.position = "bottom"),
+      if (input$by_GO) aes(color = GO),
+      geom_point(),
+      if (input$smooth) geom_smooth()
+    )
+    
+    if (input$show_margins) {
+      margin_type <- if (input$by_GO) "density" else "histogram"
+      p <- ggExtra::ggMarginal(p, type = margin_type, margins = "both",
+                               size = 8, groupColour = input$by_GO, groupFill = input$by_GO)
+    }
+    
+    p
+  }, res = 100)
+}
+
+shinyApp(ui, server)
+```
+
+Looking at the correlation between the most important variables a correlation between Pc1.L:Pc1.K and Pc1.L:Pc1.D which could add predictive value to the model. This will be explored in the final model to check for any improvement.
+
+## 3. Create a training and test dataset.
+
+```{r separate to tr and te datasets}
+# Set seed for reproducibility and split the data
+set.seed(123)
+trainIndex <- createDataPartition(df$GO, p = 0.7, list = FALSE)
+trainData <- df[trainIndex, ]
+testData <- df[-trainIndex, ]
+```
+
+## 5. Train a classifier
+
+Use the best performing model and paramaters on real data.
+
+Here Random Forests was able to get the highest accuracy with mtry 12 showing the best results. Only paramaters with high importance were used for the final model.
+
+```{r use selected model and paramaters for  clasification}
+#use random forestes for clasification 
+rf.fit1 <- randomForest(GO ~ Pc1.L+Pc1.F+Pc1.K+Pc1.D+Pc1.F+Pc1.R+Pc2.Hydrophobicity.1+Length, trainData, mtry=12)
+print(rf.fit1)
+rf.fit2 <- randomForest(GO ~ Pc1.L+Pc1.F+Pc1.K+Pc1.D+Pc1.F+Pc1.R+Pc2.Hydrophobicity.1+Length+Pc1.L:Pc1.K+Pc1.L:Pc1.D, trainData, mtry=12)
+print(rf.fit2)
+rf.fit3 <- randomForest(GO ~ ., trainData, mtry=12)
+print(rf.fit3)
+```
+
+## 6. Test the classifier
+
+Three possible models will be tested here for prediction capacity of test data.
+
+```{r Confusion matrix for real data}
+# Predict on the test data
+predictions1 <- predict(rf.fit1, newdata = testData)
+
+# Generate the confusion matrix
+confusion1 <- confusionMatrix(predictions1, testData$GO)
+confusion1
+
+# Predict on the test data
+predictions2 <- predict(rf.fit2, newdata = testData)
+
+# Generate the confusion matrix
+confusion2 <- confusionMatrix(predictions2, testData$GO)
+confusion2
+
+# Predict on the test data
+predictions3 <- predict(rf.fit3, newdata = testData)
+
+# Generate the confusion matrix
+confusion3 <- confusionMatrix(predictions3, testData$GO)
+confusion3
+
+
+```
+
+Including all variable leads to best predictive capabilities therefore model 3 (rf.fit1,rf.fit2,rf.fit3) including sensitivity of detecting the 2 least well predicted classes (Electron Transfer and Regulator). This model is able to predict Molecular Function of test data at 0.8592 accuracy and its results will be visualised in the next section.
+
+## 7. Output and visualize results
+
+Here the prediction results of the final model are visualised using plots for a more clear representaion of the models predictive ability.
+
+```{r Visualise confusion matrix}
+# Convert the confusion matrix to a data frame
+confusion_df <- as.data.frame(confusion3$table)
+confusion.plot <- ggplot(data = confusion_df, aes(x = Reference, y = Prediction)) +
+              geom_tile(aes(fill = Freq), color = "white") +
+              scale_fill_gradient(low = "white", high = "blue") +
+              geom_text(aes(label = Freq), vjust = 1) +
+              theme_minimal() +
+              labs(title = "Confusion Matrix",
+                   x = "Actual Molecular Function",
+                   y = "Predicted Molecular Function")
+confusion.plot
+```
+
+```{r visualise error rate of final model}
+rf.df <- data.frame(rf.fit3$err.rate)
+rf.df$index <- c(1:length(rf.df$OOB))
+
+error <- rf.df %>% 
+          pivot_longer(cols=c(1:6)) %>%
+          ggplot(aes(x=index, y=value, color=name)) +
+          geom_line() +
+          guides(color=guide_legend(title="error rate")) +
+          labs(title = "RF Model Error Rate",
+               x = "Trees",
+               y = "Error")
+error
+```
+
+```{r save all the plots}
+
+# PNG device
+png("Output/ConfusionMatrix.png")
+
+confusion.plot
+# Close device
+dev.off()
+
+# PNG device
+png("Output/rfError.png")
+
+error
+# Close device
+dev.off()
+
+```
