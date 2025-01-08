@@ -1,9 +1,6 @@
 ---
 title: "Coursework 2"
-output:
-  html_document:
-    df_print: paged
-  pdf_document: default
+output: html_document
 ---
 
 # Coursework 2: Predict molecular function from protein sequence.
@@ -26,7 +23,50 @@ package.check <- lapply(
     }
   }
 )
+```
 
+
+```{r get data}
+#Check if Data and Output folders exist in current directory 
+folders <- c("Data", "Output")
+
+for (f in folders) {
+  ifelse(!dir.exists(file.path(f)),
+        dir.create(file.path(f)),
+        print("Directory Exists"))
+}
+
+options(timeout = 1800)
+
+filenames <- c("Data/GO0003824.tsv", "Data/GO0003824.fasta",
+               "Data/GO0005488.tsv", "Data/GO0005488.fasta",
+               "Data/GO0009055.tsv", "Data/GO0009055.fasta",
+               "Data/GO0098772.tsv", "Data/GO0098772.fasta",
+               "Data/GO0005215.tsv", "Data/GO0005215.fasta",
+               "Data/GO0005198.tsv", "Data/GO0005198.fasta")
+
+urls <- c("https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0003824%29%29","https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0003824%29%29",
+          "https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005488%29%29","https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005488%29%29",
+          "https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0009055%29%29","https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0009055%29%29",
+          "https://rest.uniprot.org/uniprotkb/stream?&fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0098772%29%29","https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0098772%29%29",
+          "https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005215%29%29","https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005215%29%29",
+          "https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005198%29%29","https://rest.uniprot.org/uniprotkb/stream?fields=accession%2Corganism_id%2Corganism_name%2Clength%2Cgo_f&format=tsv&query=%28%28reviewed%3Atrue%29+AND+%28go%3A0005198%29%29")
+
+# Loop to download the files
+for (n in 1:12) {
+  # Download the file
+  download.file(url = urls[n], destfile = filenames[n])
+  
+  # Check if the file has been downloaded
+  if (file.exists(filenames[n])) {
+    cat("File downloaded successfully as", filenames[n], "\n")
+  } else {
+    cat("File download failed for", filenames[n], "\n")
+  }
+  
+  # Optional: Pause to avoid overloading the server
+  Sys.sleep(2)
+}
 ```
 
 ## 1. Read the data
@@ -103,7 +143,7 @@ transporter.filtered <- transporter.df %>%
   filter(!Entry %in% binding.df$Entry & !Entry %in% electron.df$Entry & !Entry %in% regulator.df$Entry & !Entry %in% catalyst.df$Entry & !Entry %in% structural.df$Entry)
 ```
 
-These databases are combined chaecked for missing values and saved in this chunk.
+These databases are combined checked for missing values and saved in this chunk.
 
 ```{r join and save database}
 #combine all databases
